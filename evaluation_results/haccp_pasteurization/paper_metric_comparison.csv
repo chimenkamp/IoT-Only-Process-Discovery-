@@ -1,0 +1,3 @@
+approach,rules_compared,mean_coverage,mean_precision,mean_effectiveness,teacher_iterations,domain_rules
+ours_knowledge_agnostic,6,0.7492500844165507,0.7390806183152833,0.7000877559506598,0,0
+Sensor2EventLog_reported,4,0.9630000000000001,0.97,0.9663094715423919,3,4

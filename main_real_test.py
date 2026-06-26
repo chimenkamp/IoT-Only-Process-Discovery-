@@ -1,43 +1,85 @@
-"""Real-data test: Future Factory sensor log.
-
-Loads a small sample of production cycles from the Future Factory
-dataset, normalises the data to [0, 1] per sensor, runs the
-three-phase synthesis pipeline to learn rules, builds per-cycle
-traces, and discovers a process model with pm4py.
-"""
+"""Future Factory entry point for the unsupervised discovery pipeline."""
 
 from __future__ import annotations
 
 import pickle
-from dataclasses import dataclass
+import os
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from src.changepoint import detect_changepoints
-from src.discovery import (
-    DiscoveryAlgorithm,
-    discover_model,
-    save_model_visualization,
+from src.cases import CaseRun, select_contiguous_case_runs
+from src.discovery import activity_name
+from src.evaluation import (
+    TuningCandidate,
+    candidate_config,
+    metrics_for_discovery,
+    metrics_for_validation,
+    split_cases,
+    stack_case_arrays,
+    tune_pipeline,
 )
-from src.merging import (
-    SegmentProfile,
-    build_compatibility_graph,
-    compute_profiles,
-    minimum_clique_cover,
-)
-from src.smt import get_solver
-from src.synthesis import IntervalRule, synthesize_rules, evaluate_rule
-from src.trace import build_traces
+from src.pipeline import validate_sensor_log, run_pipeline
 
-# ── configuration ────────────────────────────────────────────────────
+
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+
 PKL_PATH = Path("data/Future_Factory/combined_[1-6].pkl")
+N_CASE_RUNS: int | None = None
+MIN_CASE_SAMPLES = 500
+TRAIN_FRACTION = 0.6
+VALIDATION_FRACTION = 0.2
 
-# Production cycles to use (cycle 0 is tiny / startup, skip it)
-CYCLE_IDS = [1, 2, 3, 4, 5]
+TUNING_CANDIDATES = [
+    TuningCandidate(
+        penalty=6.0,
+        min_segment_size=20,
+        n_activity_clusters=10,
+        signature_depth=1,
+        rule_margin=0.25,
+        max_profile_features=40,
+        inductive_miner_noise_threshold=0.0,
+        variant_coverage_threshold=0.0,
+    ),
+    TuningCandidate(
+        penalty=8.0,
+        min_segment_size=20,
+        n_activity_clusters=12,
+        signature_depth=1,
+        rule_margin=0.35,
+        max_profile_features=40,
+        inductive_miner_noise_threshold=0.0,
+        variant_coverage_threshold=0.0,
+    ),
+    TuningCandidate(
+        penalty=10.0,
+        min_segment_size=25,
+        n_activity_clusters=14,
+        signature_depth=1,
+        rule_margin=0.45,
+        max_profile_features=48,
+        inductive_miner_noise_threshold=0.0,
+        variant_coverage_threshold=0.0,
+    ),
+    TuningCandidate(
+        penalty=8.0,
+        min_segment_size=20,
+        n_activity_clusters=12,
+        signature_depth=2,
+        rule_margin=0.35,
+        max_profile_features=40,
+        inductive_miner_noise_threshold=0.0,
+        variant_coverage_threshold=0.0,
+    ),
+]
 
-# Sensor columns — Robot 1 joint angles + gripper (8 continuous vars)
+OUTPUT_PATH = "real_model.png"
+SIGNATURE_DEBUG_PATH = "signature_debug.png"
+ACTIVITY_LEGEND_PATH = "real_activity_legend.md"
+MAX_PRINTED_TRACE_VARIANTS = 25
+
 SENSOR_COLS = [
     "M_R01_SJointAngle_Degree",
     "M_R01_LJointAngle_Degree",
@@ -45,203 +87,231 @@ SENSOR_COLS = [
     "M_R01_RJointAngle_Degree",
     "M_R01_BJointAngle_Degree",
     "M_R01_TJointAngle_Degree",
+    "M_R02_SJointAngle_Degree",
+    "M_R02_LJointAngle_Degree",
+    "M_R02_UJointAngle_Degree",
+    "M_R02_RJointAngle_Degree",
+    "M_R02_BJointAngle_Degree",
+    "M_R02_TJointAngle_Degree",
+    "M_R03_SJointAngle_Degree",
+    "M_R03_LJointAngle_Degree",
+    "M_R03_UJointAngle_Degree",
+    "M_R03_RJointAngle_Degree",
+    "M_R03_BJointAngle_Degree",
+    "M_R03_TJointAngle_Degree",
+    "M_R04_SJointAngle_Degree",
+    "M_R04_LJointAngle_Degree",
+    "M_R04_UJointAngle_Degree",
+    "M_R04_RJointAngle_Degree",
+    "M_R04_BJointAngle_Degree",
+    "M_R04_TJointAngle_Degree",
     "I_R01_Gripper_Pot",
     "I_R01_Gripper_Load",
+    "I_R02_Gripper_Pot",
+    "I_R02_Gripper_Load",
+    "I_R03_Gripper_Pot",
+    "I_R03_Gripper_Load",
+    "I_R04_Gripper_Pot",
+    "I_R04_Gripper_Load",
+    "M_Conv1_Speed_mmps",
+    "M_Conv2_Speed_mmps",
+    "M_Conv3_Speed_mmps",
+    "M_Conv4_Speed_mmps",
 ]
 
-PENALTY = 10.0          # PELT penalty (higher = fewer changepoints)
-MIN_SEGMENT_SIZE = 10   # minimum samples between two changepoints
-SMT_TIMEOUT_MS = 10000  # 10 s per SMT query
-ALGORITHM = DiscoveryAlgorithm.INDUCTIVE
-OUTPUT_PATH = "real_model.png"
 
-
-# ── helpers ──────────────────────────────────────────────────────────
-@dataclass
-class Normaliser:
-    """Min-max normaliser fitted on training data."""
-    lo: np.ndarray
-    span: np.ndarray
-
-    @classmethod
-    def fit(cls, data: np.ndarray) -> "Normaliser":
-        lo = data.min(axis=0)
-        hi = data.max(axis=0)
-        span = hi - lo
-        span[span == 0] = 1.0
-        return cls(lo=lo, span=span)
-
-    def transform(self, data: np.ndarray) -> np.ndarray:
-        return (data - self.lo) / self.span
-
-    def label(self, col: int, val: float) -> float:
-        """Map a normalised value back to original scale."""
-        return val * self.span[col] + self.lo[col]
-
-
-def load_cycles(
-    pkl_path: Path,
-    cycle_ids: list[int],
-    sensor_cols: list[str],
-) -> list[np.ndarray]:
-    """Load selected cycles and sensor columns from the pickle file."""
+def load_dataset(pkl_path: Path) -> pd.DataFrame:
+    """Load the local Future Factory pickle."""
     with open(pkl_path, "rb") as f:
-        df: pd.DataFrame = pickle.load(f)
-
-    cycles: list[np.ndarray] = []
-    for cid in cycle_ids:
-        cycle_df = df.loc[df["Q_Cell_CycleCount"] == cid, sensor_cols]
-        arr = cycle_df.to_numpy(dtype=np.float64)
-        cycles.append(arr)
-    return cycles
-
-
-def per_cycle_traces(
-    cycles: list[np.ndarray],
-    rules: list[IntervalRule],
-) -> list[list[int]]:
-    """Apply shared rules to each cycle independently → one trace per cycle."""
-    all_traces: list[list[int]] = []
-    for cycle_data in cycles:
-        traces = build_traces_nearest(cycle_data, rules)
-        all_traces.extend(traces)
-    return all_traces
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="numpy.core.numeric is deprecated",
+                category=DeprecationWarning,
+            )
+            df: pd.DataFrame = pickle.load(f)
+    return df
 
 
-def bounding_box_rules(
-    classes: list[list[int]],
-    profiles: list[SegmentProfile],
-    n_vars: int,
-) -> list[IntervalRule]:
-    """Create one bounding-box rule per class (no SMT, always succeeds)."""
-    rules: list[IntervalRule] = []
-    for i, members in enumerate(classes):
-        class_profiles = [profiles[idx] for idx in members]
-        lo = np.min([p.lo for p in class_profiles], axis=0).tolist()
-        hi = np.max([p.hi for p in class_profiles], axis=0).tolist()
-        rules.append(IntervalRule(lo=lo, hi=hi, class_id=i))
-    return rules
-
-
-def try_synthesize_rules(
-    classes: list[list[int]],
-    profiles: list[SegmentProfile],
-    n_vars: int,
-    timeout_ms: int | None,
-) -> tuple[list[IntervalRule], bool]:
-    """Try exact SMT synthesis; fall back to bounding boxes on UNSAT."""
-    smt = get_solver()
-    try:
-        rules = synthesize_rules(smt, classes, profiles, n_vars, timeout_ms)
-        return rules, True
-    except RuntimeError:
-        rules = bounding_box_rules(classes, profiles, n_vars)
-        return rules, False
-
-
-def build_traces_nearest(
-    data: np.ndarray,
-    rules: list[IntervalRule],
-) -> list[list[int]]:
-    """Build traces using nearest-center matching for overlapping rules.
-
-    For each time point, if exactly one rule covers it, use that rule.
-    If multiple or none cover it, pick the rule whose bounding-box
-    center is closest (Euclidean distance).
-    """
-    centers = np.array([
-        [(r.lo[k] + r.hi[k]) / 2 for k in range(len(r.lo))]
-        for r in rules
-    ])
-    n = data.shape[0]
-    trace: list[int] = []
-    prev = -1
-    for t in range(n):
-        pt = data[t]
-        matching = [r for r in rules if evaluate_rule(r, pt)]
-        if len(matching) == 1:
-            active = matching[0].class_id
-        else:
-            dists = np.linalg.norm(centers - pt, axis=1)
-            active = rules[int(np.argmin(dists))].class_id
-        if active != prev:
-            trace.append(active)
-            prev = active
-    return [trace]
-
-
-def format_rule(rule: IntervalRule, norm: Normaliser, names: list[str]) -> str:
-    """Pretty-print a rule with denormalised (original-scale) bounds."""
-    parts: list[str] = []
-    for k in range(len(rule.lo)):
-        lo_orig = norm.label(k, rule.lo[k])
-        hi_orig = norm.label(k, rule.hi[k])
-        parts.append(f"{names[k]}∈[{lo_orig:.1f},{hi_orig:.1f}]")
-    return " ∧ ".join(parts)
+def load_cycle_arrays(
+    df: pd.DataFrame,
+    sensor_cols: list[str],
+    n_case_runs: int | None,
+    min_case_samples: int,
+) -> tuple[list[np.ndarray], list[CaseRun]]:
+    """Load complete-looking contiguous cycle runs and sensor arrays."""
+    runs = select_contiguous_case_runs(
+        df,
+        case_id_col="Q_Cell_CycleCount",
+        max_cases=n_case_runs,
+        min_samples=min_case_samples,
+    )
+    cycles = [
+        df.iloc[run.start_row:run.end_row][sensor_cols]
+        .to_numpy(dtype=np.float64)
+        for run in runs
+    ]
+    return cycles, runs
 
 
 def main() -> None:
-    # ── 1. Load data ─────────────────────────────────────────────────
-    print(f"Loading cycles {CYCLE_IDS} from {PKL_PATH} ...")
-    cycles_raw = load_cycles(PKL_PATH, CYCLE_IDS, SENSOR_COLS)
-    for i, cid in enumerate(CYCLE_IDS):
-        print(f"  Cycle {cid}: {cycles_raw[i].shape[0]} samples × "
-              f"{cycles_raw[i].shape[1]} sensors")
-
-    # ── 2. Normalise to [0, 1] ───────────────────────────────────────
-    concat_raw = np.vstack(cycles_raw)
-    norm = Normaliser.fit(concat_raw)
-    cycles = [norm.transform(c) for c in cycles_raw]
-    concat = np.vstack(cycles)
-    n_sensors = concat.shape[1]
-    print(f"\nNormalised concatenation: {concat.shape[0]} samples × "
-          f"{n_sensors} sensors")
-
-    # ── 3. Phase 1 — change point detection ──────────────────────────
-    print(f"\nPhase 1: PELT (penalty={PENALTY}, min_size={MIN_SEGMENT_SIZE})")
-    boundaries = detect_changepoints(concat, PENALTY, MIN_SEGMENT_SIZE)
-    n_segments = len(boundaries) - 1
-    print(f"  → {n_segments} segments from {len(boundaries)} boundaries")
-
-    # ── 4. Phase 2 — segment merging ─────────────────────────────────
-    print("\nPhase 2: Segment profiling + clique cover ...")
-    profiles = compute_profiles(concat, boundaries)
-    adj = build_compatibility_graph(profiles)
-    classes = minimum_clique_cover(adj, len(profiles))
-    n_classes = len(classes)
-    print(f"  → {n_segments} segments merged into {n_classes} equivalence "
-          f"classes")
-
-    # ── 5. Phase 3 — rule synthesis ──────────────────────────────────
-    print(f"\nPhase 3: Rule synthesis ({n_classes} classes) ...")
-    rules, exact = try_synthesize_rules(
-        classes, profiles, n_sensors, SMT_TIMEOUT_MS,
+    print(f"Loading Future Factory data from {PKL_PATH} ...")
+    df = load_dataset(PKL_PATH)
+    cycles, runs = load_cycle_arrays(
+        df,
+        SENSOR_COLS,
+        N_CASE_RUNS,
+        MIN_CASE_SAMPLES,
     )
-    if exact:
-        print("  (exact SMT discrimination)")
-    else:
-        print("  (bounding-box fallback — exact discrimination UNSAT)")
-    print()
-    for rule in rules:
-        print(f"  Rule {rule.class_id}: {format_rule(rule, norm, SENSOR_COLS)}")
 
-    # ── 6. Per-cycle trace construction ──────────────────────────────
-    print(f"\nBuilding per-cycle traces ({len(cycles)} cycles) ...")
-    traces = per_cycle_traces(cycles, rules)
-    print(f"  → {len(traces)} trace(s)")
-    for i, trace in enumerate(traces):
-        label = f"Cycle {CYCLE_IDS[i]}" if i < len(CYCLE_IDS) else f"Trace {i}"
-        print(f"  {label}: {len(trace)} events → {trace}")
+    print(f"Selected {len(runs)} contiguous case run(s).")
+    _print_case_selection_summary(df, runs, cycles)
 
-    # ── 7. Process discovery ─────────────────────────────────────────
-    print(f"\nProcess discovery ({ALGORITHM.name}) ...")
-    net, im, fm = discover_model(traces, rules, ALGORITHM, SENSOR_COLS)
-    print(f"  → Petri net: {len(net.transitions)} transitions, "
-          f"{len(net.places)} places")
+    train_cases, validation_cases, test_cases = split_cases(
+        cycles,
+        train_fraction=TRAIN_FRACTION,
+        validation_fraction=VALIDATION_FRACTION,
+    )
+    print(
+        "\nSplit cases: "
+        f"{len(train_cases)} train, "
+        f"{len(validation_cases)} validation, "
+        f"{len(test_cases)} test"
+    )
 
-    # ── 8. Visualise ─────────────────────────────────────────────────
-    save_model_visualization(net, im, fm, OUTPUT_PATH)
-    print(f"\nModel saved to {OUTPUT_PATH}")
+    print("\nTuning generic pipeline candidates on held-out validation cases ...")
+    tuning = tune_pipeline(
+        train_cases,
+        validation_cases,
+        TUNING_CANDIDATES,
+        SENSOR_COLS,
+    )
+    _print_tuning_results(tuning.evaluations)
+
+    best = tuning.best.candidate
+    print(f"\nSelected candidate: {_candidate_summary(best)}")
+
+    final_train_cases = [*train_cases, *validation_cases]
+    final_data, final_case_boundaries = stack_case_arrays(final_train_cases)
+    result = run_pipeline(candidate_config(
+        best,
+        final_data,
+        final_case_boundaries,
+        SENSOR_COLS,
+        output_path=OUTPUT_PATH,
+        signature_debug_path=SIGNATURE_DEBUG_PATH,
+        activity_legend_path=ACTIVITY_LEGEND_PATH,
+    ))
+
+    test_data, test_case_boundaries = stack_case_arrays(test_cases)
+    test_validation = validate_sensor_log(
+        test_data,
+        result,
+        case_boundaries=test_case_boundaries,
+    )
+
+    print("\nFinal training metrics:")
+    _print_metrics(metrics_for_discovery(result))
+    print("\nHeld-out test metrics:")
+    _print_metrics(metrics_for_validation(test_validation))
+
+    print("\nFinal generic trace variants:")
+    _print_trace_variants(result.traces, result.n_classes)
+
+    print(f"\nPetri net: {len(result.net.transitions)} transitions, "
+          f"{len(result.net.places)} places")
+    print(f"Model saved to {OUTPUT_PATH}")
+    print(f"Activity legend saved to {ACTIVITY_LEGEND_PATH}")
+    print(f"Signature debug view saved to {SIGNATURE_DEBUG_PATH}")
+
+
+def _print_case_selection_summary(
+    df: pd.DataFrame,
+    runs: list[CaseRun],
+    cycles: list[np.ndarray],
+) -> None:
+    if not runs:
+        return
+    first = runs[0]
+    last = runs[-1]
+    print(
+        "  Time span: "
+        f"{df['timestamp'].iloc[first.start_row]} -> "
+        f"{df['timestamp'].iloc[last.end_row - 1]}"
+    )
+    lengths = np.array([cycle.shape[0] for cycle in cycles])
+    print(
+        "  Samples per case: "
+        f"min={lengths.min()}, median={int(np.median(lengths))}, "
+        f"max={lengths.max()}"
+    )
+
+
+def _print_tuning_results(evaluations: object) -> None:
+    for idx, evaluation in enumerate(evaluations, start=1):
+        metrics = evaluation.validation_metrics
+        print(
+            f"  Candidate {idx}: {_candidate_summary(evaluation.candidate)} | "
+            f"coverage={metrics.coverage:.3f}, "
+            f"fitness={metrics.model_fitness:.3f}, "
+            f"uncovered={metrics.uncovered_segments}, "
+            f"ambiguous={metrics.ambiguous_segments}, "
+            f"variants={metrics.n_variants}"
+        )
+
+
+def _print_metrics(metrics: object) -> None:
+    print(
+        f"  cases={metrics.n_cases}, segments={metrics.n_segments}, "
+        f"events={metrics.n_events}, variants={metrics.n_variants}, "
+        f"activities={metrics.n_activities}"
+    )
+    print(
+        f"  coverage={metrics.coverage:.3f}, "
+        f"fitness={metrics.model_fitness:.3f}, "
+        f"uncovered={metrics.uncovered_segments}, "
+        f"ambiguous={metrics.ambiguous_segments}"
+    )
+
+
+def _print_trace_variants(traces: list[list[int]], n_activities: int) -> None:
+    counts: dict[tuple[int, ...], int] = {}
+    for trace in traces:
+        key = tuple(trace)
+        counts[key] = counts.get(key, 0) + 1
+
+    variants = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    for idx, (variant, count) in enumerate(
+        variants[:MAX_PRINTED_TRACE_VARIANTS],
+        start=1,
+    ):
+        print(
+            f"  Variant {idx} ({count} case(s)): "
+            f"{_format_trace(list(variant), n_activities)}"
+        )
+    remaining = len(variants) - MAX_PRINTED_TRACE_VARIANTS
+    if remaining > 0:
+        print(f"  ... {remaining} additional variant(s) omitted")
+
+
+def _candidate_summary(candidate: TuningCandidate) -> str:
+    return (
+        f"penalty={candidate.penalty}, "
+        f"min_size={candidate.min_segment_size}, "
+        f"clusters={candidate.n_activity_clusters}, "
+        f"depth={candidate.signature_depth}, "
+        f"margin={candidate.rule_margin}, "
+        f"max_features={candidate.max_profile_features}"
+    )
+
+
+def _format_trace(trace: list[int], n_activities: int) -> list[str]:
+    return [
+        activity_name(activity, n_activities)
+        if activity >= 0
+        else "UNMAPPED"
+        for activity in trace
+    ]
 
 
 if __name__ == "__main__":

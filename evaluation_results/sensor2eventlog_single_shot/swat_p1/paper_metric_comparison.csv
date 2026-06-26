@@ -1,0 +1,4 @@
+approach,model,accuracy,accuracy_status,mean_coverage,mean_precision,mean_effectiveness,state_explainability,test_rule_applicability,teacher_iterations,domain_rules
+ours_knowledge_agnostic,signature_interval_rules,0.8050889328063241,computed_from_workbook_p1_state_after_discovery,0.5617588932806324,1.0,0.7495057660089297,,0.8666666666666667,0,0
+Sensor2EventLog_reported,HMM,0.76,reported_by_paper_after_teacher_loop,,,,all_states_above_0.78,,2,2
+Sensor2EventLog_reported,K-means,0.94,reported_by_paper_after_teacher_loop,,,,all_states_above_0.78,,2,2

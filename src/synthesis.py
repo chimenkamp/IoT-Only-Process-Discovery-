@@ -5,188 +5,157 @@ from dataclasses import dataclass
 import numpy as np
 
 from src.merging import SegmentProfile
-from src.smt import SMTSolver, SatResult
 
 
 @dataclass(frozen=True)
 class IntervalRule:
-    """Axis-aligned hyperrectangular predicate over sensor variables.
-
-    Represents the conjunction ``v_k >= lo[k] AND v_k <= hi[k]``
-    for each dimension *k*.
-
-    Parameters
-    ----------
-    lo : list[float]
-        Lower bounds per dimension.
-    hi : list[float]
-        Upper bounds per dimension.
-    class_id : int
-        Equivalence-class identifier this rule characterises.
-    """
+    """Interval predicate over segment features."""
 
     lo: list[float]
     hi: list[float]
     class_id: int
 
 
-def synthesize_discriminator(
-    smt: SMTSolver,
-    positive_profiles: list[SegmentProfile],
-    negative_profiles: list[SegmentProfile],
-    n_vars: int,
-    timeout_ms: int | None = None,
-) -> tuple[list[float], list[float]]:
-    """Synthesise a discriminating hyperrectangular predicate via SMT.
-
-    Finds bounds ``[lo_k, hi_k]`` for each dimension *k* such that
-    every positive profile is fully contained within the hyperrectangle
-    and every negative profile is fully excluded.
-
-    Parameters
-    ----------
-    smt : SMTSolver
-        Abstract SMT solver instance.
-    positive_profiles : list[SegmentProfile]
-        Segment profiles that the predicate must cover.
-    negative_profiles : list[SegmentProfile]
-        Segment profiles that the predicate must exclude.
-    n_vars : int
-        Number of sensor variables (dimensions).
-    timeout_ms : int | None
-        SMT solver timeout in milliseconds.
-
-    Returns
-    -------
-    tuple[list[float], list[float]]
-        ``(lo, hi)`` — lower and upper bounds per dimension.
-
-    Raises
-    ------
-    RuntimeError
-        If the solver returns UNSAT or UNKNOWN.
-    """
-    lo_vars = [smt.Real(f"lo_{k}") for k in range(n_vars)]
-    hi_vars = [smt.Real(f"hi_{k}") for k in range(n_vars)]
-
-    with smt.create_context(timeout_ms=timeout_ms) as ctx:
-        for profile in positive_profiles:
-            for k in range(n_vars):
-                ctx.add(smt.LE(lo_vars[k], smt.RealVal(float(profile.lo[k]))))
-                ctx.add(smt.LE(smt.RealVal(float(profile.hi[k])), hi_vars[k]))
-
-        for profile in negative_profiles:
-            disjuncts = []
-            for k in range(n_vars):
-                disjuncts.append(
-                    smt.GT(lo_vars[k], smt.RealVal(float(profile.hi[k])))
-                )
-                disjuncts.append(
-                    smt.GT(smt.RealVal(float(profile.lo[k])), hi_vars[k])
-                )
-            ctx.add(smt.Or(*disjuncts))
-
-        result = ctx.check()
-        if result != SatResult.SAT:
-            raise RuntimeError(
-                f"Discriminator synthesis failed: {result.name}"
-            )
-
-        m = ctx.model()
-        lo_vals = [
-            smt.to_real_float(m.evaluate(lo_vars[k], model_completion=True))
-            for k in range(n_vars)
-        ]
-        hi_vals = [
-            smt.to_real_float(m.evaluate(hi_vars[k], model_completion=True))
-            for k in range(n_vars)
-        ]
-    return lo_vals, hi_vals
-
-
 def synthesize_rules(
-    smt: SMTSolver,
     classes: list[list[int]],
     profiles: list[SegmentProfile],
-    n_vars: int,
-    timeout_ms: int | None = None,
+    n_features: int,
+    margin: float = 0.0,
 ) -> list[IntervalRule]:
-    """Synthesise one interval rule per equivalence class.
-
-    For each class *E_i*, pairwise discriminators ``d_{ij}`` are
-    synthesised against every other class *E_j*.  The final rule is
-    the intersection (tightest bounds) of all pairwise discriminators.
-
-    Parameters
-    ----------
-    smt : SMTSolver
-        Abstract SMT solver instance.
-    classes : list[list[int]]
-        Equivalence classes — each inner list holds segment indices.
-    profiles : list[SegmentProfile]
-        Segment profiles (one per segment).
-    n_vars : int
-        Number of sensor variables.
-    timeout_ms : int | None
-        SMT solver timeout in milliseconds.
-
-    Returns
-    -------
-    list[IntervalRule]
-        One rule per equivalence class.
-
-    Raises
-    ------
-    RuntimeError
-        If any pairwise discriminator synthesis fails.
-    """
-    if len(classes) == 1:
-        class_profiles = [profiles[idx] for idx in classes[0]]
-        lo = np.min([p.lo for p in class_profiles], axis=0).tolist()
-        hi = np.max([p.hi for p in class_profiles], axis=0).tolist()
-        return [IntervalRule(lo=lo, hi=hi, class_id=0)]
-
+    """Materialize one interval-grammar rule per segment class."""
     rules: list[IntervalRule] = []
-    for i, class_i in enumerate(classes):
-        pos_profiles = [profiles[idx] for idx in class_i]
-        bounds_per_j: list[tuple[list[float], list[float]]] = []
-        for j, class_j in enumerate(classes):
-            if i == j:
-                continue
-            neg_profiles = [profiles[idx] for idx in class_j]
-            lo, hi = synthesize_discriminator(
-                smt, pos_profiles, neg_profiles, n_vars, timeout_ms,
-            )
-            bounds_per_j.append((lo, hi))
-
-        final_lo = [
-            max(b[0][k] for b in bounds_per_j)
-            for k in range(n_vars)
+    for class_id, members in enumerate(classes):
+        positives = [profiles[idx] for idx in members]
+        negatives = [
+            profiles[idx]
+            for other_id, other_members in enumerate(classes)
+            if other_id != class_id
+            for idx in other_members
         ]
-        final_hi = [
-            min(b[1][k] for b in bounds_per_j)
-            for k in range(n_vars)
-        ]
-        rules.append(IntervalRule(lo=final_lo, hi=final_hi, class_id=i))
+        lo, hi = synthesize_discriminator(
+            positives,
+            negatives,
+            n_features,
+            margin=margin,
+        )
+        rules.append(IntervalRule(lo=lo, hi=hi, class_id=class_id))
     return rules
 
 
-def evaluate_rule(rule: IntervalRule, point: np.ndarray) -> bool:
-    """Evaluate whether a data point satisfies an interval rule.
+def synthesize_discriminator(
+    positive_profiles: list[SegmentProfile],
+    negative_profiles: list[SegmentProfile],
+    n_features: int,
+    margin: float = 0.0,
+) -> tuple[list[float], list[float]]:
+    """Solve the interval SyGuS fragment by its exact constructive form."""
+    if margin < 0.0:
+        raise ValueError("margin must be non-negative")
+    if not positive_profiles:
+        raise ValueError("positive_profiles must not be empty")
+    for profile in [*positive_profiles, *negative_profiles]:
+        if profile.lo.shape[0] != n_features or profile.hi.shape[0] != n_features:
+            raise ValueError("profile dimension does not match n_features")
 
-    Parameters
-    ----------
-    rule : IntervalRule
-        The hyperrectangular predicate.
-    point : np.ndarray
-        A single data point, shape ``(n_vars,)``.
+    lo_vals = np.min([profile.lo for profile in positive_profiles], axis=0)
+    hi_vals = np.max([profile.hi for profile in positive_profiles], axis=0)
 
-    Returns
-    -------
-    bool
-        ``True`` if the point falls within the rule's hyperrectangle.
-    """
-    for k in range(len(rule.lo)):
-        if point[k] < rule.lo[k] or point[k] > rule.hi[k]:
-            return False
-    return True
+    for profile in negative_profiles:
+        if _boxes_intersect(lo_vals, hi_vals, profile.lo, profile.hi):
+            raise RuntimeError("Rule synthesis failed: interval grammar is UNSAT")
+
+    if margin > 0.0 and negative_profiles:
+        lo_vals, hi_vals = _expand_without_negative_intersections(
+            lo_vals,
+            hi_vals,
+            negative_profiles,
+            margin,
+        )
+    elif margin > 0.0:
+        lo_vals = lo_vals - margin
+        hi_vals = hi_vals + margin
+
+    return lo_vals.astype(float).tolist(), hi_vals.astype(float).tolist()
+
+
+def evaluate_rule(rule: IntervalRule, feature_vector: np.ndarray) -> bool:
+    """Return whether one segment feature vector satisfies a rule."""
+    if feature_vector.shape[0] != len(rule.lo):
+        raise ValueError("feature dimension does not match rule")
+    return bool(np.all(
+        (feature_vector >= np.array(rule.lo))
+        & (feature_vector <= np.array(rule.hi))
+    ))
+
+
+def rule_covers_profile(rule: IntervalRule, profile: SegmentProfile) -> bool:
+    """Return whether a rule covers the whole interval profile."""
+    return bool(np.all(
+        (profile.lo >= np.array(rule.lo))
+        & (profile.hi <= np.array(rule.hi))
+    ))
+
+
+def classify_profiles(
+    profiles: list[SegmentProfile],
+    rules: list[IntervalRule],
+) -> tuple[list[int], list[int], list[int]]:
+    """Classify segment profiles and report coverage violations."""
+    labels: list[int] = []
+    uncovered: list[int] = []
+    ambiguous: list[int] = []
+
+    for idx, profile in enumerate(profiles):
+        active = [
+            rule.class_id
+            for rule in rules
+            if rule_covers_profile(rule, profile)
+        ]
+        if len(active) == 1:
+            labels.append(active[0])
+        elif not active:
+            labels.append(-1)
+            uncovered.append(idx)
+        else:
+            labels.append(-1)
+            ambiguous.append(idx)
+
+    return labels, uncovered, ambiguous
+
+
+def _boxes_intersect(
+    lo_a: np.ndarray,
+    hi_a: np.ndarray,
+    lo_b: np.ndarray,
+    hi_b: np.ndarray,
+) -> bool:
+    return bool(np.all(np.maximum(lo_a, lo_b) <= np.minimum(hi_a, hi_b)))
+
+
+def _expand_without_negative_intersections(
+    lo_vals: np.ndarray,
+    hi_vals: np.ndarray,
+    negative_profiles: list[SegmentProfile],
+    requested_margin: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    def valid(margin: float) -> bool:
+        lo = lo_vals - margin
+        hi = hi_vals + margin
+        return not any(
+            _boxes_intersect(lo, hi, profile.lo, profile.hi)
+            for profile in negative_profiles
+        )
+
+    if valid(requested_margin):
+        return lo_vals - requested_margin, hi_vals + requested_margin
+
+    low = 0.0
+    high = requested_margin
+    for _ in range(32):
+        mid = (low + high) / 2.0
+        if valid(mid):
+            low = mid
+        else:
+            high = mid
+
+    return lo_vals - low, hi_vals + low

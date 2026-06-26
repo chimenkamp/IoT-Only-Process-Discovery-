@@ -1,208 +1,211 @@
-"""Test suite for the sensor stream process discovery pipeline."""
-
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from main import PipelineConfig, PipelineResult, run_pipeline
-from src.synthesis import evaluate_rule
-from tests.datagen import generate_synthetic_data
-
-
-def _well_separated_regimes() -> (
-    tuple[list[tuple[np.ndarray, np.ndarray]], int]
-):
-    """Return three well-separated 2-D regimes and n_vars.
-
-    Returns
-    -------
-    tuple[list[tuple[np.ndarray, np.ndarray]], int]
-        ``(regimes, n_vars)``
-    """
-    regimes = [
-        (np.array([0.0, 0.0]), np.array([1.0, 1.0])),
-        (np.array([5.0, 5.0]), np.array([6.0, 6.0])),
-        (np.array([10.0, 10.0]), np.array([11.0, 11.0])),
-    ]
-    return regimes, 2
+from src.discovery import build_label_map, rule_label
+from src.pipeline import PipelineConfig, run_pipeline, validate_sensor_log
+from src.synthesis import IntervalRule
 
 
-def _run_clean(seed: int = 42) -> tuple[PipelineResult, int]:
-    """Run the pipeline on clean, well-separated synthetic data.
+def test_pipeline_builds_rule_log_and_model_from_signature_segments() -> None:
+    data, case_boundaries = _paper_example_log(n_cases=2)
 
-    Returns
-    -------
-    tuple[PipelineResult, int]
-        ``(result, n_true_regimes)``
-    """
-    regimes, n_vars = _well_separated_regimes()
-    sd = generate_synthetic_data(
-        seed=seed,
-        n_vars=n_vars,
-        regimes=regimes,
-        regime_sequence=[0, 1, 2, 0, 1],
-        points_per_segment=200,
+    result = run_pipeline(PipelineConfig(
+        data=data,
+        penalty=0.05,
+        min_segment_size=10,
+        var_names=["position", "pressure"],
+        case_boundaries=case_boundaries,
+        signature_profile_radius=0.0,
+    ))
+
+    assert result.n_classes == 3
+    assert result.traces == [[0, 1, 2], [0, 1, 2]]
+    assert result.uncovered_segments == []
+    assert result.ambiguous_segments == []
+    assert len(result.event_log) == 2
+    assert result.event_log[0][0].start == 0
+    assert result.event_log[0][-1].end == case_boundaries[1]
+    assert any(
+        name.startswith("signed_area(")
+        for name in result.profile_names
     )
-    config = PipelineConfig(
-        data=sd.data,
-        seed=seed,
-        n_sensors=n_vars,
-        penalty=1.0,
-        min_segment_size=2,
+
+
+def test_case_boundaries_are_hard_segment_boundaries() -> None:
+    data, case_boundaries = _paper_example_log(n_cases=2)
+
+    result = run_pipeline(PipelineConfig(
+        data=data,
+        penalty=100.0,
+        min_segment_size=10,
+        case_boundaries=case_boundaries,
+    ))
+
+    assert set(case_boundaries).issubset(set(result.boundaries))
+    assert len(result.traces) == 2
+
+
+def test_validation_reuses_learned_feature_space_and_model() -> None:
+    data, case_boundaries = _paper_example_log(n_cases=2)
+    discovery = run_pipeline(PipelineConfig(
+        data=data,
+        penalty=0.05,
+        min_segment_size=10,
+        case_boundaries=case_boundaries,
+    ))
+
+    validation = validate_sensor_log(
+        data,
+        discovery,
+        case_boundaries=case_boundaries,
     )
-    return run_pipeline(config), len(regimes)
+
+    assert validation.uncovered_segments == []
+    assert validation.ambiguous_segments == []
+    assert validation.conforming
 
 
-class TestRoundTrip:
-    """Round-trip correctness on clean, well-separated data."""
+def test_validation_fitness_uses_assigned_activity_alphabet() -> None:
+    train_case = np.vstack([
+        np.tile([0.0, 0.0], (20, 1)),
+        np.tile([1.0, 0.0], (20, 1)),
+        np.tile([2.0, 0.0], (20, 1)),
+    ])
+    validation_case = np.vstack([
+        np.tile([0.0, 0.0], (20, 1)),
+        np.tile([1.0, 0.0], (20, 1)),
+        np.tile([3.0, 0.0], (20, 1)),
+    ])
+    discovery = run_pipeline(PipelineConfig(
+        data=train_case,
+        penalty=0.01,
+        min_segment_size=10,
+        case_boundaries=[0, len(train_case)],
+        activity_abstraction="interval",
+    ))
 
-    def test_correct_number_of_regimes(self) -> None:
-        """Pipeline recovers the correct number of regimes."""
-        result, n_true = _run_clean()
-        assert result.n_classes == n_true
+    validation = validate_sensor_log(
+        validation_case,
+        discovery,
+        case_boundaries=[0, len(validation_case)],
+    )
 
-    def test_boundary_accuracy(self) -> None:
-        """Detected boundaries are within tolerance of ground truth."""
-        regimes, n_vars = _well_separated_regimes()
-        sd = generate_synthetic_data(
-            seed=42,
-            n_vars=n_vars,
-            regimes=regimes,
-            regime_sequence=[0, 1, 2, 0, 1],
-            points_per_segment=200,
-        )
-        config = PipelineConfig(
-            data=sd.data, seed=42, n_sensors=n_vars, penalty=1.0,
-        )
-        result = run_pipeline(config)
-        true_boundaries = set(sd.boundaries)
-        detected = set(result.boundaries)
-        tolerance = 5
-        for tb in true_boundaries:
-            assert any(
-                abs(tb - db) <= tolerance for db in detected
-            ), f"True boundary {tb} not found near any detected boundary"
-
-    def test_rules_consistent_with_ground_truth(self) -> None:
-        """Each synthesised rule covers data from exactly one true regime."""
-        regimes, n_vars = _well_separated_regimes()
-        sd = generate_synthetic_data(
-            seed=42,
-            n_vars=n_vars,
-            regimes=regimes,
-            regime_sequence=[0, 1, 2, 0, 1],
-            points_per_segment=200,
-        )
-        config = PipelineConfig(
-            data=sd.data, seed=42, n_sensors=n_vars, penalty=1.0,
-        )
-        result = run_pipeline(config)
-
-        for rule in result.rules:
-            covered_regimes: set[int] = set()
-            for seg_idx, label in enumerate(sd.labels):
-                start = sd.boundaries[seg_idx]
-                end = sd.boundaries[seg_idx + 1]
-                for t in range(start, end):
-                    if evaluate_rule(rule, sd.data[t]):
-                        covered_regimes.add(label)
-                        break
-            assert len(covered_regimes) == 1, (
-                f"Rule {rule.class_id} covers data from "
-                f"{len(covered_regimes)} true regimes (expected 1)"
-            )
+    assert validation.uncovered_segments
+    assert validation.segment_labels == [0, 1, -1]
+    assert validation.model_fitness > 0.0
+    assert not validation.conforming
 
 
-class TestOverSegmentationAbsorption:
-    """Phase 2 merges spurious segments from over-segmentation."""
+def test_clustered_interval_abstraction_reuses_rule_feature_space() -> None:
+    data, case_boundaries = _paper_example_log(n_cases=3)
+    discovery = run_pipeline(PipelineConfig(
+        data=data,
+        penalty=0.05,
+        min_segment_size=10,
+        case_boundaries=case_boundaries,
+        signature_depth=1,
+        activity_abstraction="clustered_interval",
+        n_activity_clusters=3,
+    ))
 
-    def test_spurious_segments_merged(self) -> None:
-        """Over-segmented data yields the correct regime count."""
-        regimes = [
-            (np.array([0.0, 0.0]), np.array([1.0, 1.0])),
-            (np.array([5.0, 5.0]), np.array([6.0, 6.0])),
-        ]
-        sd = generate_synthetic_data(
-            seed=7,
-            n_vars=2,
-            regimes=regimes,
-            regime_sequence=[0, 1, 0],
-            points_per_segment=200,
-        )
-        config = PipelineConfig(
-            data=sd.data,
-            seed=7,
-            n_sensors=2,
-            penalty=0.1,
-            min_segment_size=20,
-        )
-        result = run_pipeline(config)
-        assert len(result.boundaries) > len(sd.boundaries), (
-            "Expected PELT to over-segment but it did not"
-        )
-        assert result.n_classes == len(regimes), (
-            f"Expected {len(regimes)} classes but got {result.n_classes}"
-        )
+    validation = validate_sensor_log(
+        data,
+        discovery,
+        case_boundaries=case_boundaries,
+    )
+
+    assert discovery.n_classes == 3
+    assert discovery.selected_profile_features is not None
+    assert validation.uncovered_segments == []
+    assert validation.ambiguous_segments == []
+    assert validation.conforming
 
 
-class TestMutualExclusivity:
-    """No two rules fire on the same data point."""
+def test_case_local_segmentation_and_short_segment_merge() -> None:
+    case = np.vstack([
+        np.tile([0.0, 0.0], (20, 1)),
+        np.tile([1.0, 0.0], (20, 1)),
+    ])
+    data = np.vstack([case, case])
+    case_boundaries = [0, len(case), len(data)]
 
-    def test_no_overlap(self) -> None:
-        """Every data point satisfies at most one rule."""
-        result, _ = _run_clean()
-        regimes, n_vars = _well_separated_regimes()
-        sd = generate_synthetic_data(
-            seed=42,
-            n_vars=n_vars,
-            regimes=regimes,
-            regime_sequence=[0, 1, 2, 0, 1],
-            points_per_segment=200,
-        )
-        for t in range(sd.data.shape[0]):
-            count = sum(
-                1 for r in result.rules if evaluate_rule(r, sd.data[t])
-            )
-            assert count <= 1, (
-                f"Time point {t} covered by {count} rules (expected <= 1)"
-            )
+    result = run_pipeline(PipelineConfig(
+        data=data,
+        penalty=0.01,
+        min_segment_size=10,
+        case_boundaries=case_boundaries,
+        segment_by_case=True,
+        merge_short_segments=True,
+    ))
 
-
-class TestCoverage:
-    """Every data point is covered by exactly one rule."""
-
-    def test_full_coverage(self) -> None:
-        """Every data point satisfies exactly one rule."""
-        result, _ = _run_clean()
-        regimes, n_vars = _well_separated_regimes()
-        sd = generate_synthetic_data(
-            seed=42,
-            n_vars=n_vars,
-            regimes=regimes,
-            regime_sequence=[0, 1, 2, 0, 1],
-            points_per_segment=200,
-        )
-        for t in range(sd.data.shape[0]):
-            count = sum(
-                1 for r in result.rules if evaluate_rule(r, sd.data[t])
-            )
-            assert count == 1, (
-                f"Time point {t} covered by {count} rules (expected 1)"
-            )
+    assert set(case_boundaries).issubset(result.boundaries)
+    assert min(
+        right - left
+        for left, right in zip(result.boundaries, result.boundaries[1:])
+    ) >= 10
 
 
-class TestDeterminism:
-    """Pipeline produces identical results across runs with the same seed."""
+def test_signature_debug_path_exports_image(tmp_path) -> None:
+    data, case_boundaries = _paper_example_log(n_cases=1)
+    output_path = tmp_path / "debug.png"
 
-    def test_identical_results(self) -> None:
-        """Two runs with the same config yield equal traces and rules."""
-        result1, _ = _run_clean(seed=99)
-        result2, _ = _run_clean(seed=99)
+    run_pipeline(PipelineConfig(
+        data=data,
+        penalty=0.05,
+        min_segment_size=10,
+        case_boundaries=case_boundaries,
+        signature_debug_path=str(output_path),
+    ))
 
-        assert result1.traces == result2.traces
-        assert result1.n_classes == result2.n_classes
-        for r1, r2 in zip(result1.rules, result2.rules):
-            assert r1.lo == r2.lo
-            assert r1.hi == r2.hi
-            assert r1.class_id == r2.class_id
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
+
+
+def test_large_rule_labels_are_compacted_for_visualization() -> None:
+    rule = IntervalRule(
+        lo=[0.0] * 100,
+        hi=[1.0] * 100,
+        class_id=7,
+    )
+    feature_names = [f"feature_{idx}" for idx in range(100)]
+
+    label = rule_label(rule, feature_names)
+
+    assert label.startswith("R7:")
+    assert "... (98 more)" in label
+    assert len(label) < 220
+
+
+def test_generic_activity_labels_and_legend_are_exported(tmp_path) -> None:
+    data, case_boundaries = _paper_example_log(n_cases=2)
+    legend_path = tmp_path / "legend.md"
+
+    result = run_pipeline(PipelineConfig(
+        data=data,
+        penalty=0.05,
+        min_segment_size=10,
+        case_boundaries=case_boundaries,
+        activity_label_style="generic",
+        activity_legend_path=str(legend_path),
+    ))
+    label_map = build_label_map(
+        result.rules,
+        result.profile_names,
+        label_style="generic",
+    )
+
+    assert label_map[0] == "A01"
+    assert legend_path.exists()
+    assert "## A01" in legend_path.read_text(encoding="utf-8")
+
+
+def _paper_example_log(n_cases: int) -> tuple[np.ndarray, list[int]]:
+    case = np.vstack([
+        np.tile([0.0, 0.0], (40, 1)),
+        np.tile([1.0, 0.0], (40, 1)),
+        np.tile([1.0, 1.0], (40, 1)),
+    ])
+    data = np.vstack([case for _ in range(n_cases)])
+    case_boundaries = [idx * len(case) for idx in range(n_cases + 1)]
+    return data, case_boundaries

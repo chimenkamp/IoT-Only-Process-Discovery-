@@ -1,196 +1,144 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 
 import numpy as np
 
 
-_MAX_CLIQUE_COVER_NODES = 500
-
-
 @dataclass(frozen=True)
 class SegmentProfile:
-    """Per-variable min/max interval for a temporal segment.
-
-    Parameters
-    ----------
-    lo : np.ndarray
-        Lower bounds, shape ``(n_vars,)``.
-    hi : np.ndarray
-        Upper bounds, shape ``(n_vars,)``.
-    """
+    """Interval abstraction of one segment feature vector."""
 
     lo: np.ndarray
     hi: np.ndarray
 
 
-def compute_profiles(
-    data: np.ndarray,
-    boundaries: list[int],
-) -> list[SegmentProfile]:
-    """Compute empirical value profiles for each segment.
-
-    Parameters
-    ----------
-    data : np.ndarray
-        Sensor log of shape ``(N, n_vars)``.
-    boundaries : list[int]
-        Sorted boundary indices ``[0, cp1, ..., N]``.
-
-    Returns
-    -------
-    list[SegmentProfile]
-        One profile per segment (``len(boundaries) - 1`` profiles).
-    """
-    profiles: list[SegmentProfile] = []
-    for i in range(len(boundaries) - 1):
-        segment = data[boundaries[i]:boundaries[i + 1]]
-        profiles.append(SegmentProfile(
-            lo=segment.min(axis=0),
-            hi=segment.max(axis=0),
-        ))
-    return profiles
-
-
-def build_compatibility_graph(profiles: list[SegmentProfile]) -> list[list[bool]]:
-    """Build a compatibility graph over segment profiles.
-
-    Two segments are compatible (connected by an edge) if and only if
-    their per-variable intervals overlap on **every** dimension.  This
-    means a single hyperrectangular predicate in the grammar can cover
-    both segments simultaneously.
-
-    Parameters
-    ----------
-    profiles : list[SegmentProfile]
-        The segment profiles to compare.
-
-    Returns
-    -------
-    list[list[bool]]
-        Symmetric adjacency matrix where ``adj[a][b]`` is ``True``
-        when segments *a* and *b* are compatible.
-    """
-    n = len(profiles)
-    # Vectorised: stack all lo/hi into (n, d) arrays
-    lo_arr = np.array([p.lo for p in profiles])  # (n, d)
-    hi_arr = np.array([p.hi for p in profiles])  # (n, d)
-    # Intervals overlap iff max(lo_a, lo_b) <= min(hi_a, hi_b) for all dims
-    # Broadcasting: (n,1,d) vs (1,n,d) → (n,n,d)
-    overlap = (np.maximum(lo_arr[:, None, :], lo_arr[None, :, :])
-               <= np.minimum(hi_arr[:, None, :], hi_arr[None, :, :]))
-    compat = overlap.all(axis=2)  # (n, n) bool
-    np.fill_diagonal(compat, True)
-    return compat.tolist()
-
-
-def minimum_clique_cover(
-    adj: list[list[bool]],
-    n: int,
+def interval_equivalence_classes(
+    profiles: list[SegmentProfile],
 ) -> list[list[int]]:
-    """Compute exact minimum clique cover of an undirected graph.
-
-    Minimum clique cover of *G* equals the chromatic number of the
-    complement graph.  This function builds the complement and solves
-    exact graph coloring via backtracking with branch-and-bound,
-    seeded by a greedy upper bound.
-
-    Parameters
-    ----------
-    adj : list[list[bool]]
-        Symmetric adjacency matrix of the compatibility graph (size
-        ``n × n``).
-    n : int
-        Number of nodes.
-
-    Returns
-    -------
-    list[list[int]]
-        Each inner list is an equivalence class (clique in the original
-        graph) containing segment indices.
-
-    Raises
-    ------
-    ValueError
-        If *n* exceeds the hard-coded node limit.
-    """
-    if n > _MAX_CLIQUE_COVER_NODES:
-        raise ValueError(
-            f"Minimum clique cover requested for {n} nodes, "
-            f"exceeding the limit of {_MAX_CLIQUE_COVER_NODES}."
-        )
+    """Find the finest partition separable by interval predicates."""
+    n = len(profiles)
     if n == 0:
         return []
 
-    comp = [
-        [not adj[i][j] and i != j for j in range(n)]
-        for i in range(n)
-    ]
+    lo_arr = np.array([p.lo for p in profiles])
+    hi_arr = np.array([p.hi for p in profiles])
+    classes = [[idx] for idx in range(n)]
 
-    greedy_colors = _greedy_coloring(comp, n)
-    upper = max(greedy_colors) + 1
+    changed = True
+    while changed:
+        changed = False
+        parent = list(range(len(classes)))
 
-    best_k = [upper]
-    best_coloring = greedy_colors[:]
-    coloring = [-1] * n
+        def find(idx: int) -> int:
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
 
-    def _backtrack(idx: int, num_colors: int) -> None:
-        """Assign color to vertex *idx*, pruning when hopeless."""
-        if num_colors >= best_k[0]:
-            return
-        if idx == n:
-            best_k[0] = num_colors
-            best_coloring[:] = coloring[:]
-            return
+        def union(left: int, right: int) -> None:
+            nonlocal changed
+            root_left = find(left)
+            root_right = find(right)
+            if root_left == root_right:
+                return
+            parent[root_right] = root_left
+            changed = True
 
-        used: set[int] = set()
-        for u in range(idx):
-            if comp[idx][u] and coloring[u] != -1:
-                used.add(coloring[u])
+        class_lo = np.array([
+            np.min(lo_arr[members], axis=0)
+            for members in classes
+        ])
+        class_hi = np.array([
+            np.max(hi_arr[members], axis=0)
+            for members in classes
+        ])
 
-        for c in range(num_colors):
-            if c not in used:
-                coloring[idx] = c
-                _backtrack(idx + 1, num_colors)
-                coloring[idx] = -1
+        hits = []
+        for lo, hi in zip(class_lo, class_hi):
+            hits.append((
+                np.maximum(lo, lo_arr) <= np.minimum(hi, hi_arr)
+            ).all(axis=1))
 
-        if num_colors + 1 < best_k[0]:
-            coloring[idx] = num_colors
-            _backtrack(idx + 1, num_colors + 1)
-            coloring[idx] = -1
+        for i in range(len(classes)):
+            for j in range(i + 1, len(classes)):
+                if hits[i][classes[j]].any() or hits[j][classes[i]].any():
+                    union(i, j)
 
-    _backtrack(0, 0)
+        if changed:
+            grouped: dict[int, list[int]] = defaultdict(list)
+            for idx, members in enumerate(classes):
+                grouped[find(idx)].extend(members)
+            classes = [
+                sorted(members)
+                for _, members in sorted(grouped.items())
+            ]
 
-    k = best_k[0]
-    classes: list[list[int]] = [[] for _ in range(k)]
-    for v in range(n):
-        classes[best_coloring[v]].append(v)
-    return [c for c in classes if c]
+    return classes
 
 
-def _greedy_coloring(comp: list[list[bool]], n: int) -> list[int]:
-    """Greedy sequential coloring on the complement graph.
+def merge_overlapping_classes(
+    profiles: list[SegmentProfile],
+    classes: list[list[int]],
+) -> list[list[int]]:
+    """Merge pre-clustered classes until interval predicates are separable."""
+    if not classes:
+        return []
+    if any(not members for members in classes):
+        raise ValueError("classes must not be empty")
 
-    Parameters
-    ----------
-    comp : list[list[bool]]
-        Adjacency matrix of the complement graph.
-    n : int
-        Number of vertices.
+    lo_arr = np.array([p.lo for p in profiles])
+    hi_arr = np.array([p.hi for p in profiles])
+    merged = [sorted(members) for members in classes]
 
-    Returns
-    -------
-    list[int]
-        Color assignment (0-indexed) for each vertex.
-    """
-    colors = [-1] * n
-    for v in range(n):
-        used: set[int] = set()
-        for u in range(v):
-            if comp[v][u] and colors[u] != -1:
-                used.add(colors[u])
-        c = 0
-        while c in used:
-            c += 1
-        colors[v] = c
-    return colors
+    changed = True
+    while changed:
+        changed = False
+        parent = list(range(len(merged)))
+
+        def find(idx: int) -> int:
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
+
+        def union(left: int, right: int) -> None:
+            nonlocal changed
+            root_left = find(left)
+            root_right = find(right)
+            if root_left == root_right:
+                return
+            parent[root_right] = root_left
+            changed = True
+
+        class_lo = np.array([
+            np.min(lo_arr[members], axis=0)
+            for members in merged
+        ])
+        class_hi = np.array([
+            np.max(hi_arr[members], axis=0)
+            for members in merged
+        ])
+
+        hits = []
+        for lo, hi in zip(class_lo, class_hi):
+            hits.append((
+                np.maximum(lo, lo_arr) <= np.minimum(hi, hi_arr)
+            ).all(axis=1))
+
+        for i in range(len(merged)):
+            for j in range(i + 1, len(merged)):
+                if hits[i][merged[j]].any() or hits[j][merged[i]].any():
+                    union(i, j)
+
+        if changed:
+            grouped: dict[int, list[int]] = defaultdict(list)
+            for idx, members in enumerate(merged):
+                grouped[find(idx)].extend(members)
+            merged = [
+                sorted(members)
+                for _, members in sorted(grouped.items())
+            ]
+
+    return merged

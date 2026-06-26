@@ -1,0 +1,39 @@
+# Activity Legend
+
+Generic activity labels are domain-agnostic identifiers. Each rule is an interval predicate over the discovered segment feature space.
+
+## A01
+
+```text
+z(start(T)) in [-2.2,2.04] and z(start(pH)) in [-4.15,4.27] and z(start(Kappa)) in [-7.67,-1.66] and z(start(Mu)) in [-2.43,2.8] and z(start(Tau)) in [-3.19,1.58] and z(start(Q_in)) in [0.214,4.66] and z(start(Q_out)) in [-2,2] and z(start(P)) in [-4.29,4.17] and z(end(T)) in [-2.18,2.06] and z(end(pH)) in [-4.21,4.58] and z(end(Kappa)) in [-3.39,3.81] and z(end(Mu)) in [-2.36,2.79] and z(end(Tau)) in [-2.4,2.49] and z(end(Q_in)) in [-2,4.71] and z(end(Q_out)) in [-2,2] and z(end(P)) in [-4.16,4.39] and z(min(T)) in [-2.14,2.1] and z(min(Kappa)) in [-3.28,1.12] and z(min(Mu)) in [-1.88,2.47] and z(min(Tau)) in [-2.59,1.69] and z(min(Q_in)) in [-2,5.1] and z(min(Q_out)) in [-2,2] and z(max(T)) in [-2.52,1.6] and z(max(Kappa)) in [-5.65,2.83] and z(max(Mu)) in [-2.15,2.55] and z(max(Tau)) in [-2.17,2.42] and z(max(Q_in)) in [-0.953,3.14] and z(max(Q_out)) in [-2,2] and z(min_delta(Kappa)) in [-2.58,4.37] and z(min_delta(Q_in)) in [-13.8,1.11] and z(max_delta(Q_in)) in [-1.28,4.32] and z(max_delta(Q_out)) in [-2,2] and z(sig(T)) in [-2.07,2.13] and z(sig(pH)) in [-4.28,4.14] and z(sig(Kappa)) in [-0.0825,6.33] and z(sig(Mu)) in [-2.96,2.99] and z(sig(Tau)) in [-1.14,5.33] and z(sig(Q_in)) in [-4.69,2.32] and z(sig(Q_out)) in [-2,2] and z(sig(P)) in [-4.16,4.34]
+```
+
+## A02
+
+```text
+z(start(T)) in [-2.28,3.94] and z(start(pH)) in [-4.52,4.7] and z(start(Kappa)) in [-3.66,4.1] and z(start(Mu)) in [-4.04,2.91] and z(start(Tau)) in [-4.18,2.46] and z(start(Q_in)) in [-2,2] and z(start(Q_out)) in [-2,5.41] and z(start(P)) in [-4.61,4.52] and z(end(T)) in [-2.25,3.87] and z(end(pH)) in [-4.55,4.45] and z(end(Kappa)) in [-4.03,4.1] and z(end(Mu)) in [-4.06,2.77] and z(end(Tau)) in [-4.09,2.28] and z(end(Q_in)) in [-2,2] and z(end(Q_out)) in [-2,4.83] and z(end(P)) in [-5.24,4.48] and z(min(T)) in [-2.22,4] and z(min(Kappa)) in [-2.25,2.22] and z(min(Mu)) in [-3.36,2.49] and z(min(Tau)) in [-3.22,2.15] and z(min(Q_in)) in [-2,2] and z(min(Q_out)) in [-2,5.18] and z(max(T)) in [-2.56,2.85] and z(max(Kappa)) in [-3.17,4.62] and z(max(Mu)) in [-4.04,2.5] and z(max(Tau)) in [-4.5,2.42] and z(max(Q_in)) in [-2,2] and z(max(Q_out)) in [-2,4.67] and z(min_delta(Kappa)) in [-4.39,3.24] and z(min_delta(Q_in)) in [-2,2] and z(max_delta(Q_in)) in [-2,2] and z(max_delta(Q_out)) in [-2,5.98] and z(sig(T)) in [-3.17,3] and z(sig(pH)) in [-4.43,4.46] and z(sig(Kappa)) in [-4.01,3.61] and z(sig(Mu)) in [-3.26,3.13] and z(sig(Tau)) in [-6.91,3.15] and z(sig(Q_in)) in [-2,2] and z(sig(Q_out)) in [-2.54,6.14] and z(sig(P)) in [-5.26,4.71]
+```
+
+## A03
+
+```text
+z(start(T)) in [-2.12,2.04] and z(start(pH)) in [-4.28,4.19] and z(start(Kappa)) in [-3.43,3.72] and z(start(Mu)) in [-2.31,2.73] and z(start(Tau)) in [-4.19,0.0298] and z(start(Q_in)) in [-2,2] and z(start(Q_out)) in [-2,2] and z(start(P)) in [-4.02,5.14] and z(end(T)) in [-2.18,2.06] and z(end(pH)) in [-4.38,4.78] and z(end(Kappa)) in [-14,-2.31] and z(end(Mu)) in [-2.38,2.81] and z(end(Tau)) in [-4.09,1.5] and z(end(Q_in)) in [0.235,4.73] and z(end(Q_out)) in [-2,2] and z(end(P)) in [-4.23,4.16] and z(min(T)) in [-2.14,2.09] and z(min(Kappa)) in [-4.82,-0.268] and z(min(Mu)) in [-1.86,2.47] and z(min(Tau)) in [-3.21,0.943] and z(min(Q_in)) in [-2,2] and z(min(Q_out)) in [-2,2] and z(max(T)) in [-2.48,1.6] and z(max(Kappa)) in [-8.19,4.57] and z(max(Mu)) in [-2.12,2.45] and z(max(Tau)) in [-4.48,1.16] and z(max(Q_in)) in [-1.08,3.16] and z(max(Q_out)) in [-2,2] and z(min_delta(Kappa)) in [-18,-6.98] and z(min_delta(Q_in)) in [-4.14,2] and z(max_delta(Q_in)) in [7.58,13.9] and z(max_delta(Q_out)) in [-2,2] and z(sig(T)) in [-3.86,3.26] and z(sig(pH)) in [-4.35,4.37] and z(sig(Kappa)) in [-9.76,-0.269] and z(sig(Mu)) in [-3.08,3.05] and z(sig(Tau)) in [-2.31,5.61] and z(sig(Q_in)) in [0.24,4.74] and z(sig(Q_out)) in [-2,2] and z(sig(P)) in [-5.02,4.24]
+```
+
+## A04
+
+```text
+z(start(T)) in [-1.29,3.91] and z(start(pH)) in [-4.41,4.4] and z(start(Kappa)) in [-3.37,3.77] and z(start(Mu)) in [-3.89,1.93] and z(start(Tau)) in [-2.11,2.31] and z(start(Q_in)) in [-2,2] and z(start(Q_out)) in [-2,2] and z(start(P)) in [-4.43,4.7] and z(end(T)) in [-2.25,2.92] and z(end(pH)) in [-4.56,4.5] and z(end(Kappa)) in [-4.23,4.1] and z(end(Mu)) in [-3.11,2.73] and z(end(Tau)) in [-2.24,2.48] and z(end(Q_in)) in [-2,2] and z(end(Q_out)) in [-2,4.69] and z(end(P)) in [-4.57,4.3] and z(min(T)) in [-2.21,3.02] and z(min(Kappa)) in [-2.26,2.2] and z(min(Mu)) in [-2.93,2.09] and z(min(Tau)) in [-1.97,2.21] and z(min(Q_in)) in [-2,2] and z(min(Q_out)) in [-2,2] and z(max(T)) in [-2.04,2.59] and z(max(Kappa)) in [-2.98,4.42] and z(max(Mu)) in [-3.16,2.32] and z(max(Tau)) in [-2.08,2.25] and z(max(Q_in)) in [-2,2] and z(max(Q_out)) in [-2,4.51] and z(min_delta(Kappa)) in [-4.62,3.13] and z(min_delta(Q_in)) in [-2,2] and z(max_delta(Q_in)) in [-2,2] and z(max_delta(Q_out)) in [-2,5.96] and z(sig(T)) in [-12.1,-5.04] and z(sig(pH)) in [-4.27,4.37] and z(sig(Kappa)) in [-4.05,3.5] and z(sig(Mu)) in [-2.05,4.22] and z(sig(Tau)) in [-3.12,2.8] and z(sig(Q_in)) in [-2,2] and z(sig(Q_out)) in [-2,5.92] and z(sig(P)) in [-4.48,4.4]
+```
+
+## A05
+
+```text
+z(start(T)) in [-2.2,3.04] and z(start(pH)) in [-4.82,4.55] and z(start(Kappa)) in [-3.6,3.81] and z(start(Mu)) in [-3.4,2.73] and z(start(Tau)) in [-2.37,2.46] and z(start(Q_in)) in [-2,4.67] and z(start(Q_out)) in [-2,2] and z(start(P)) in [-4.92,4.28] and z(end(T)) in [-1.25,3.9] and z(end(pH)) in [-4.62,5.32] and z(end(Kappa)) in [-3.73,4.01] and z(end(Mu)) in [-4.01,2] and z(end(Tau)) in [-2.48,2.55] and z(end(Q_in)) in [-2,2] and z(end(Q_out)) in [-2,2] and z(end(P)) in [-4.26,4.06] and z(min(T)) in [-2.13,3.13] and z(min(Kappa)) in [-2.21,2.17] and z(min(Mu)) in [-2.94,2.08] and z(min(Tau)) in [-2.11,2.13] and z(min(Q_in)) in [-2,2] and z(min(Q_out)) in [-2,2] and z(max(T)) in [-2.02,2.61] and z(max(Kappa)) in [-3.25,4.5] and z(max(Mu)) in [-3.23,2.27] and z(max(Tau)) in [-1.93,2.5] and z(max(Q_in)) in [-2,3.09] and z(max(Q_out)) in [-2,2] and z(min_delta(Kappa)) in [-4.51,3.28] and z(min_delta(Q_in)) in [-13.9,2] and z(max_delta(Q_in)) in [-2,2.96] and z(max_delta(Q_out)) in [-2,2] and z(sig(T)) in [5.07,11.4] and z(sig(pH)) in [-4.44,4.1] and z(sig(Kappa)) in [-3.58,3.69] and z(sig(Mu)) in [-4.1,2.18] and z(sig(Tau)) in [-3.61,3.37] and z(sig(Q_in)) in [-4.7,2] and z(sig(Q_out)) in [-2,2] and z(sig(P)) in [-4.21,4.59]
+```
+
+## A06
+
+```text
+z(start(T)) in [-2.19,2.04] and z(start(pH)) in [-3.81,4.41] and z(start(Kappa)) in [-12.5,-6.93] and z(start(Mu)) in [-2.29,2.82] and z(start(Tau)) in [-4.16,0.542] and z(start(Q_in)) in [0.214,4.71] and z(start(Q_out)) in [-2,2] and z(start(P)) in [-4.05,3.69] and z(end(T)) in [-2.17,2.06] and z(end(pH)) in [-3.88,3.97] and z(end(Kappa)) in [-8.46,-2.3] and z(end(Mu)) in [-2.25,2.66] and z(end(Tau)) in [-3.23,1.5] and z(end(Q_in)) in [0.208,4.71] and z(end(Q_out)) in [-2,2] and z(end(P)) in [-4.19,4.72] and z(min(T)) in [-2.14,2.1] and z(min(Kappa)) in [-4.78,-0.491] and z(min(Mu)) in [-1.85,2.46] and z(min(Tau)) in [-3.23,1.03] and z(min(Q_in)) in [0.82,5.07] and z(min(Q_out)) in [-2,2] and z(max(T)) in [-2.52,1.6] and z(max(Kappa)) in [-17.6,-10.6] and z(max(Mu)) in [-2.12,2.48] and z(max(Tau)) in [-3.22,1.21] and z(max(Q_in)) in [-0.952,3.14] and z(max(Q_out)) in [-2,2] and z(min_delta(Kappa)) in [-0.941,4.45] and z(min_delta(Q_in)) in [-4.02,1.09] and z(max_delta(Q_in)) in [-1.08,4.09] and z(max_delta(Q_out)) in [-2,2] and z(sig(T)) in [-2.06,2.06] and z(sig(pH)) in [-3.96,4.05] and z(sig(Kappa)) in [0.106,5.84] and z(sig(Mu)) in [-3.49,2.97] and z(sig(Tau)) in [-1.17,5.52] and z(sig(Q_in)) in [-2.33,2.41] and z(sig(Q_out)) in [-2,2] and z(sig(P)) in [-3.88,4.06]
+```
