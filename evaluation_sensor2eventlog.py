@@ -1,16 +1,9 @@
-"""Single-shot benchmark against the Sensor2EventLog evaluation setup.
-
-The benchmark intentionally does not add Sensor2EventLog's expert event rules
-or iterative teacher feedback. Reference labels are used only after discovery
-to compute the paper's rule coverage and precision metrics when labels are
-available in the local dataset.
-"""
+"""Single-shot Sensor2EventLog benchmark using the shared pipeline."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-import shutil
 import tempfile
 from typing import Any
 
@@ -23,13 +16,13 @@ os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 import numpy as np
 import pandas as pd
 
-import tests.evaluate_haccp_pasteurization as haccp
 from src.discovery import activity_name
 from src.evaluation import (
     metrics_for_discovery,
     metrics_for_validation,
     stack_case_arrays,
 )
+from evaluation_haccp import run_haccp_evaluation
 from src.pipeline import PipelineConfig, run_pipeline, validate_sensor_log
 from src.rule_metrics import (
     aggregate_rule_metrics,
@@ -41,8 +34,7 @@ from src.rule_metrics import (
 )
 
 
-OUTPUT_DIR = Path("evaluation_results/sensor2eventlog_single_shot")
-HACCP_SOURCE_DIR = Path("evaluation_results/haccp_pasteurization")
+OUTPUT_DIR = Path("evaluation_results/sensor2eventlog_single_shot_10")
 HACCP_OUTPUT_DIR = OUTPUT_DIR / "haccp_pasteurization"
 
 SWAT_DIR = Path("data/SWaT.A4 & A5_Jul 2019")
@@ -60,13 +52,8 @@ SWAT_SENSOR_COLUMNS = [
 SWAT_AUDIT_COLUMNS = ["P1_STATE"]
 SWAT_STATE_COLUMN = "P1_STATE"
 
-# The SWaT collection note says the workbook timestamps are GMT+0 and the
-# normal run is 12:35-14:50 GMT+8, i.e. 04:35-06:50 GMT+0.
 SWAT_NORMAL_START = pd.Timestamp("2019-07-20T04:35:00Z")
 SWAT_NORMAL_END = pd.Timestamp("2019-07-20T06:50:00Z")
-
-# The paper's SWaT DFG reports four cases, but the local workbook has no case
-# identifier. These are transparent pseudo-batches used only for PM formatting.
 SWAT_PSEUDO_BATCHES = 4
 SWAT_TRAIN_FRACTION = 0.60
 SWAT_TARGET_ACTIVITY_COUNT = 3
@@ -79,56 +66,76 @@ SWAT_PIPELINE_RULE_MARGIN = 2.0
 SWAT_PIPELINE_MAX_PROFILE_FEATURES = 30
 SWAT_PIPELINE_PROFILE_SCALING = "robust"
 SWAT_PIPELINE_RANDOM_STATE = 0
+SWAT_PIPELINE_RULE_MAX_PREDICATES = 4
 
 
 def main() -> None:
     """Run the full single-shot benchmark."""
+    print("Starting single-shot Sensor2EventLog benchmark ...", flush=True)
+    run_single_shot_benchmark(report=True)
+
+
+def run_single_shot_benchmark(report: bool = True) -> pd.DataFrame:
+    """Generate all benchmark artifacts through the shared src pipeline."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    run_haccp()
-    swat_summary = run_swat_p1()
+    _progress(report, "Running HACCP benchmark component ...")
+    haccp_result = run_haccp_evaluation(
+        output_dir=HACCP_OUTPUT_DIR,
+        report=False,
+        progress=report,
+    )
+    _progress(report, "Running SWaT P1 benchmark component ...")
+    swat_summary = run_swat_p1(progress=report)
 
-    haccp_summary = pd.read_csv(HACCP_OUTPUT_DIR / "summary.csv")
+    haccp_summary = haccp_result.summary.copy()
     haccp_summary["artifact_source"] = str(HACCP_OUTPUT_DIR)
-    swat_summary["artifact_source"] = "generated_this_run"
-    summaries = [haccp_summary, swat_summary]
-    benchmark_summary = pd.concat(summaries, ignore_index=True, sort=False)
+    swat_summary["artifact_source"] = str(SWAT_OUTPUT_DIR)
+    benchmark_summary = pd.concat(
+        [haccp_summary, swat_summary],
+        ignore_index=True,
+        sort=False,
+    )
     benchmark_summary.to_csv(OUTPUT_DIR / "benchmark_summary.csv", index=False)
     write_methodology_note()
 
-    print("\nSingle-shot Sensor2EventLog benchmark")
-    print(benchmark_summary.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
-    print(f"\nWrote benchmark artifacts to {OUTPUT_DIR}")
-
-
-def run_haccp() -> None:
-    """Copy or regenerate the existing all-batch HACCP evaluation."""
-    if os.environ.get("RERUN_HACCP", "0") == "1":
-        haccp.OUTPUT_DIR = HACCP_OUTPUT_DIR
-        haccp.main()
-        return
-
-    if not (HACCP_SOURCE_DIR / "summary.csv").exists():
-        raise FileNotFoundError(
-            "Existing HACCP summary is missing. Run "
-            "`venv/bin/python evaluate_haccp_pasteurization.py` first, or set "
-            "RERUN_HACCP=1 for this combined benchmark."
+    if report:
+        print("\nSingle-shot Sensor2EventLog benchmark")
+        print(
+            benchmark_summary.to_string(
+                index=False,
+                float_format=lambda value: f"{value:.3f}",
+            )
         )
-    HACCP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    for path in HACCP_SOURCE_DIR.iterdir():
-        if path.is_file():
-            shutil.copy2(path, HACCP_OUTPUT_DIR / path.name)
+        print(f"\nWrote benchmark artifacts to {OUTPUT_DIR}")
+    return benchmark_summary
 
 
-def run_swat_p1() -> pd.DataFrame:
+def run_swat_p1(progress: bool = True) -> pd.DataFrame:
     """Run the knowledge-agnostic discovery pipeline on SWaT P1."""
     SWAT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _progress(progress, f"Loading SWaT workbook from {SWAT_WORKBOOK} ...")
     sample = load_swat_p1_sample()
     split = split_swat_cases(sample)
+    _progress(
+        progress,
+        (
+            "Split SWaT pseudo-batches into "
+            f"{len(split['train_sensor_cases'])} train and "
+            f"{len(split['test_sensor_cases'])} test case(s)."
+        ),
+    )
 
     train_data, train_boundaries = stack_case_arrays(split["train_sensor_cases"])
     test_data, test_boundaries = stack_case_arrays(split["test_sensor_cases"])
 
+    _progress(
+        progress,
+        (
+            "Running SWaT discovery pipeline with CVC5 SyGuS "
+            f"(rule_max_predicates={SWAT_PIPELINE_RULE_MAX_PREDICATES}) ..."
+        ),
+    )
     discovery = run_pipeline(PipelineConfig(
         data=train_data,
         penalty=SWAT_PIPELINE_PENALTY,
@@ -146,15 +153,19 @@ def run_swat_p1() -> pd.DataFrame:
         profile_scaling=SWAT_PIPELINE_PROFILE_SCALING,
         profile_cluster_random_state=SWAT_PIPELINE_RANDOM_STATE,
         rule_margin=SWAT_PIPELINE_RULE_MARGIN,
+        rule_max_predicates=SWAT_PIPELINE_RULE_MAX_PREDICATES,
         activity_label_style="generic",
         output_path=str(SWAT_OUTPUT_DIR / "process_model.png"),
         activity_legend_path=str(SWAT_OUTPUT_DIR / "activity_legend.md"),
     ))
+    _progress(progress, f"Discovered {discovery.n_classes} SWaT rule activit(y/ies).")
+    _progress(progress, "Validating held-out SWaT pseudo-batches ...")
     validation = validate_sensor_log(
         test_data,
         discovery,
         case_boundaries=test_boundaries,
     )
+    _progress(progress, "Computing SWaT rule metrics and writing artifacts ...")
 
     train_true = np.concatenate(split["train_state_cases"])
     test_true = np.concatenate(split["test_state_cases"])
@@ -208,7 +219,7 @@ def run_swat_p1() -> pd.DataFrame:
         test_best_rules,
     )
     summary = pd.DataFrame([{
-        "approach": "ours_signature_interval_rules",
+        "approach": "ours_signature_sygus_rules",
         "dataset": "SWaT.A4_A5_Jul_2019_P1",
         "data_scope": "normal_operation_window_from_dataset_note",
         "sample_batches": SWAT_PSEUDO_BATCHES,
@@ -244,6 +255,7 @@ def run_swat_p1() -> pd.DataFrame:
         "pipeline_min_segment_size": SWAT_PIPELINE_MIN_SEGMENT_SIZE,
         "pipeline_signature_depth": SWAT_PIPELINE_SIGNATURE_DEPTH,
         "pipeline_rule_margin": SWAT_PIPELINE_RULE_MARGIN,
+        "pipeline_rule_max_predicates": SWAT_PIPELINE_RULE_MAX_PREDICATES,
         "pipeline_max_profile_features": SWAT_PIPELINE_MAX_PROFILE_FEATURES,
         "paper_hmm_baseline_accuracy": 0.58,
         "paper_hmm_final_accuracy": 0.76,
@@ -412,7 +424,7 @@ def write_swat_paper_comparison(summary: pd.DataFrame) -> None:
     rows = [
         {
             "approach": "ours_knowledge_agnostic",
-            "model": "signature_interval_rules",
+            "model": "signature_sygus_rules",
             "accuracy": summary.loc[0, "test_rule_state_accuracy"],
             "accuracy_status": "computed_from_workbook_p1_state_after_discovery",
             "mean_coverage": summary.loc[0, "test_mean_rule_coverage"],
@@ -478,10 +490,10 @@ This benchmark compares against the evaluation protocol described in
 ## HACCP
 
 The local HACCP dataset contains both `batch_id` and `state`, so the paper's
-coverage metrics are computed directly on held-out batches. By default this
-combined script copies the existing all-batch HACCP artifacts from
-`evaluation_results/haccp_pasteurization`, because regenerating changepoints for
-all 968 batches is slow. Set `RERUN_HACCP=1` to force regeneration.
+coverage metrics are computed directly on held-out batches. The combined
+benchmark regenerates the HACCP artifacts through `evaluation_haccp.py`, which
+calls the same `src.pipeline.run_pipeline` implementation as the standalone
+HACCP entry point.
 
 ## SWaT P1
 
@@ -499,6 +511,11 @@ the reported SWaT accuracy is still a single-shot workbook-label diagnostic
 rather than a reproduction of the paper's teacher-guided HMM/K-means results.
 """
     (OUTPUT_DIR / "methodology.md").write_text(note)
+
+
+def _progress(enabled: bool, message: str) -> None:
+    if enabled:
+        print(message, flush=True)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ class TuningCandidate:
     profile_scaling: str = "robust"
     inductive_miner_noise_threshold: float = 0.0
     variant_coverage_threshold: float = 0.0
+    rule_max_predicates: int | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,7 @@ def candidate_config(
         max_profile_features=candidate.max_profile_features,
         profile_scaling=candidate.profile_scaling,
         rule_margin=candidate.rule_margin,
+        rule_max_predicates=candidate.rule_max_predicates,
         inductive_miner_noise_threshold=(
             candidate.inductive_miner_noise_threshold
         ),

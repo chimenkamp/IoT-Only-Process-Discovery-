@@ -21,7 +21,8 @@ def main() -> None:
     print(f"Synthesized {result.n_classes} rule activities")
     print()
     for rule in result.rules:
-        print(f"  Rule {rule.class_id}: {len(rule.lo)} feature intervals")
+        n_predicates = len(rule.atoms)
+        print(f"  Rule {rule.class_id}: {n_predicates} predicate atom(s)")
     print()
     for idx, trace in enumerate(result.traces):
         print(f"  Trace {idx}: {trace}")

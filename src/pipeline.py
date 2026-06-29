@@ -58,6 +58,7 @@ class PipelineConfig:
     signature_debug_path: str | None = None
     activity_legend_path: str | None = None
     activity_legend_compact_parts: int | None = None
+    rule_max_predicates: int | None = None
 
 
 @dataclass
@@ -99,6 +100,7 @@ class PipelineResult:
     net: object
     initial_marking: object
     final_marking: object
+    rule_max_predicates: int | None = None
 
     @property
     def n_classes(self) -> int:
@@ -176,6 +178,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         rule_space.profiles,
         len(rule_space.names),
         margin=config.rule_margin,
+        max_predicates=config.rule_max_predicates,
     )
     segment_labels, uncovered, ambiguous = classify_profiles(
         rule_space.profiles,
@@ -261,6 +264,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
         profile_feature_means=rule_space.means,
         profile_feature_scales=rule_space.scales,
         rule_margin=config.rule_margin,
+        rule_max_predicates=config.rule_max_predicates,
         inductive_miner_noise_threshold=(
             config.inductive_miner_noise_threshold
         ),

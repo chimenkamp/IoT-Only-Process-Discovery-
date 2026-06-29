@@ -4,7 +4,7 @@ import numpy as np
 
 from src.discovery import build_label_map, rule_label
 from src.pipeline import PipelineConfig, run_pipeline, validate_sensor_log
-from src.synthesis import IntervalRule
+from src.synthesis import IntervalAtom, IntervalRule, SygusCertificate
 
 
 def test_pipeline_builds_rule_log_and_model_from_signature_segments() -> None:
@@ -75,7 +75,7 @@ def test_validation_fitness_uses_assigned_activity_alphabet() -> None:
     validation_case = np.vstack([
         np.tile([0.0, 0.0], (20, 1)),
         np.tile([1.0, 0.0], (20, 1)),
-        np.tile([3.0, 0.0], (20, 1)),
+        np.tile([1.5, 0.0], (20, 1)),
     ])
     discovery = run_pipeline(PipelineConfig(
         data=train_case,
@@ -164,9 +164,19 @@ def test_signature_debug_path_exports_image(tmp_path) -> None:
 
 def test_large_rule_labels_are_compacted_for_visualization() -> None:
     rule = IntervalRule(
-        lo=[0.0] * 100,
-        hi=[1.0] * 100,
         class_id=7,
+        n_features=100,
+        atoms=tuple(
+            IntervalAtom(feature=idx, lo=0.0, hi=1.0)
+            for idx in range(100)
+        ),
+        certificate=SygusCertificate(
+            backend="test",
+            grammar="test",
+            max_predicates=100,
+            effective_margin=0.0,
+            solution="test",
+        ),
     )
     feature_names = [f"feature_{idx}" for idx in range(100)]
 

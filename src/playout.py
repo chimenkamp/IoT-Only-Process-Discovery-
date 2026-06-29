@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - exercised only without optional dep.
 from src.discovery import build_label_map
 from src.pipeline import PipelineResult
 from src.signatures import segment_signature_feature_matrix
+from src.synthesis import active_rule_atoms
 
 
 @dataclass(frozen=True)
@@ -260,21 +261,19 @@ def sample_activity_features_interval(
         name: idx for idx, name in enumerate(support.raw_feature_names)
     }
     rule = discovery.rules[activity]
-    for idx, (lo, hi, name) in enumerate(
-        zip(rule.lo, rule.hi, discovery.profile_names)
-    ):
-        sampled = _sample_interval(lo, hi, rng)
-        raw_name = _unwrap_scaled_feature_name(name)
-        if (
-            discovery.profile_feature_means is not None
-            and discovery.profile_feature_scales is not None
-        ):
-            sampled = (
-                sampled * discovery.profile_feature_scales[idx]
-                + discovery.profile_feature_means[idx]
-            )
-        if raw_name in raw_index:
-            base[raw_index[raw_name]] = sampled
+    rule_intervals = _rule_raw_intervals(discovery, rule)
+    bounds = _activity_feature_bounds(support, activity, base)
+    for name, (rule_lo, rule_hi) in rule_intervals.items():
+        raw_pos = raw_index.get(name)
+        if raw_pos is None:
+            continue
+        empirical_lo, empirical_hi = bounds[raw_pos]
+        lo = max(float(empirical_lo), float(rule_lo))
+        hi = min(float(empirical_hi), float(rule_hi))
+        if hi < lo:
+            lo, hi = rule_lo, rule_hi
+        lo, hi = _stable_bounds(lo, hi, base[raw_pos])
+        base[raw_pos] = _sample_interval(lo, hi, rng)
 
     return {
         name: float(value)
@@ -571,12 +570,12 @@ def _rule_raw_intervals(
     rule: Any,
 ) -> dict[str, tuple[float, float]]:
     intervals: dict[str, tuple[float, float]] = {}
-    for idx, (lo, hi, name) in enumerate(
-        zip(rule.lo, rule.hi, discovery.profile_names)
-    ):
+    for atom in active_rule_atoms(rule):
+        idx = atom.feature
+        name = discovery.profile_names[idx]
         raw_name = _unwrap_scaled_feature_name(name)
-        raw_lo = float(lo)
-        raw_hi = float(hi)
+        raw_lo = float("-inf") if atom.lo is None else float(atom.lo)
+        raw_hi = float("inf") if atom.hi is None else float(atom.hi)
         if (
             discovery.profile_feature_means is not None
             and discovery.profile_feature_scales is not None

@@ -10,7 +10,7 @@ discovery from raw IoT sensor values.
 3. Map each segment to envelope features and an `esig` truncated signature of
    the time-augmented path.
 4. Merge segment occurrences that are separable by the interval grammar.
-5. Synthesize one interval rule per segment class.
+5. Synthesize one bounded SyGuS predicate per segment class.
 6. Build timestamped events and activity projections from rule activations.
 7. Discover a Petri net with the Inductive Miner.
 8. Optionally export a signature debug image.
@@ -25,7 +25,8 @@ discovery from raw IoT sensor values.
 - `src/changepoint.py`: PELT change point detection.
 - `src/signatures.py`: `esig` segment signatures and debug image export.
 - `src/merging.py`: grammar-aware segment-class merging.
-- `src/synthesis.py`: interval-rule synthesis over segment features.
+- `src/synthesis.py`: CVC5-backed bounded SyGuS rule synthesis over segment
+  features.
 - `src/trace.py`: timestamped event-log construction.
 - `src/discovery.py`: Inductive Miner process discovery.
 - `tests/`: tests for the paper-aligned behavior.
@@ -38,6 +39,22 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## SyGuS Backend
+
+Rule synthesis uses the CVC5 Python API with `sygus=true` and an actual SyGuS
+grammar. The implemented grammar is the paper's bounded interval fragment:
+`Rule ::= true | Atom | (and Atom Rule)` and
+`Atom ::= c <= xi | xi <= c`. Candidate constants are finite: for each feature
+they are the expanded positive-class hull bounds. By default the grammar allows
+up to `2 * n_features` predicate atoms; `rule_max_predicates` can make that
+bound explicit.
+
+There is no hidden Python enumerator fallback. If CVC5 is unavailable, returns
+`UNKNOWN`, or cannot separate the positive and negative segment profiles within
+the configured grammar, synthesis fails. A requested positive `rule_margin` is
+part of the SyGuS specification; it is not silently reduced. Each rule records
+the exact solver setup in its `SygusCertificate`.
 
 ## Run
 
@@ -58,7 +75,7 @@ python main_real_test.py
 This expects `data/Future_Factory/combined_[1-6].pkl` and writes
 `real_model.png` plus `signature_debug.png`.  The script selects contiguous
 `Q_Cell_CycleCount` runs as cases so repeated or reset cycle IDs are not merged,
-then discovers an unsupervised clustered-interval rule model from the sensor
+then discovers an unsupervised SyGuS interval-rule model from the sensor
 segments.
 
 ## Tests

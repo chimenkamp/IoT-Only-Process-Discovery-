@@ -13,7 +13,7 @@ os.environ.setdefault(
 import pandas as pd
 import pm4py
 
-from src.synthesis import IntervalRule
+from src.synthesis import IntervalAtom, IntervalRule, active_rule_atoms
 
 
 def rule_label(
@@ -22,7 +22,7 @@ def rule_label(
     max_parts: int = 2,
     max_chars: int = 220,
 ) -> str:
-    """Format an interval rule as a readable segment-feature predicate."""
+    """Format a SyGuS rule as a readable segment-feature predicate."""
     return compact_rule_predicate(
         rule,
         var_names,
@@ -33,11 +33,8 @@ def rule_label(
 
 
 def full_rule_predicate(rule: IntervalRule, var_names: list[str]) -> str:
-    """Format a full interval rule predicate without visualization truncation."""
-    parts = [
-        f"{var_names[idx]} in [{rule.lo[idx]:.3g},{rule.hi[idx]:.3g}]"
-        for idx in range(len(rule.lo))
-    ]
+    """Format a full SyGuS rule predicate without visualization truncation."""
+    parts = _rule_predicate_parts(rule, var_names)
     return " and ".join(parts)
 
 
@@ -48,11 +45,8 @@ def compact_rule_predicate(
     max_chars: int = 220,
     prefix: str = "",
 ) -> str:
-    """Format a compact interval rule predicate."""
-    parts = [
-        f"{var_names[idx]} in [{rule.lo[idx]:.3g},{rule.hi[idx]:.3g}]"
-        for idx in range(len(rule.lo))
-    ]
+    """Format a compact SyGuS rule predicate."""
+    parts = _rule_predicate_parts(rule, var_names)
     full_label = " and ".join(parts)
     if len(parts) <= max_parts and len(full_label) <= max_chars:
         return f"{prefix}{full_label}"
@@ -72,6 +66,24 @@ def compact_rule_predicate(
     remaining = len(parts) - len(shown)
     suffix = f" and ... ({remaining} more)" if remaining else ""
     return f"{prefix}{' and '.join(shown)}{suffix}"
+
+
+def _rule_predicate_parts(rule: IntervalRule, var_names: list[str]) -> list[str]:
+    atoms = active_rule_atoms(rule)
+    if not atoms:
+        return ["true"]
+    return [_format_atom(atom, var_names) for atom in atoms]
+
+
+def _format_atom(atom: IntervalAtom, var_names: list[str]) -> str:
+    name = var_names[atom.feature]
+    if atom.lo is not None and atom.hi is not None:
+        return f"{name} in [{atom.lo:.3g},{atom.hi:.3g}]"
+    if atom.lo is not None:
+        return f"{name} >= {atom.lo:.3g}"
+    if atom.hi is not None:
+        return f"{name} <= {atom.hi:.3g}"
+    return "true"
 
 
 def activity_name(
@@ -238,15 +250,15 @@ def save_activity_legend(
     activity_prefix: str = "A",
     compact_parts: int | None = None,
 ) -> None:
-    """Write a Markdown legend from generic activity labels to interval rules."""
+    """Write a Markdown legend from generic activity labels to SyGuS rules."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# Activity Legend",
         "",
         "Generic activity labels are domain-agnostic identifiers. "
-        "Each rule is an interval predicate over the discovered segment "
-        "feature space.",
+        "Each rule is a CVC5 SyGuS interval predicate over the discovered "
+        "segment feature space.",
         "",
     ]
     for rule in sorted(rules, key=lambda item: item.class_id):

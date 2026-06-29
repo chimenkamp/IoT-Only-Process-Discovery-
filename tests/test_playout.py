@@ -11,6 +11,7 @@ from src.playout import (
     playout_sensor_log,
     sample_activity_features,
 )
+from src.synthesis import active_rule_atoms
 
 
 def test_playout_generates_sensor_log_from_discovery() -> None:
@@ -139,9 +140,9 @@ def _paper_example_log(n_cases: int) -> tuple[np.ndarray, list[int]]:
 
 def _assert_features_satisfy_rule(discovery, activity: int, features: dict[str, float]) -> None:
     rule = discovery.rules[activity]
-    for idx, (lo, hi, name) in enumerate(
-        zip(rule.lo, rule.hi, discovery.profile_names)
-    ):
+    for atom in active_rule_atoms(rule):
+        idx = atom.feature
+        name = discovery.profile_names[idx]
         raw_name = _unwrap_scaled_feature_name(name)
         value = features[raw_name]
         if (
@@ -152,7 +153,10 @@ def _assert_features_satisfy_rule(discovery, activity: int, features: dict[str, 
                 (value - discovery.profile_feature_means[idx])
                 / discovery.profile_feature_scales[idx]
             )
-        assert lo - 1e-8 <= value <= hi + 1e-8
+        if atom.lo is not None:
+            assert atom.lo - 1e-8 <= value
+        if atom.hi is not None:
+            assert value <= atom.hi + 1e-8
 
 
 def _unwrap_scaled_feature_name(name: str) -> str:

@@ -1,2 +1,2 @@
 reference_state,best_rule_id,state_support,rule_support,overlap,coverage,precision,effectiveness
-P1_STATE=2,0,4048,2274,2274,0.5617588932806324,1.0,0.7495057660089297
+P1_STATE=2,0,4048,2599,2599,0.6420454545454546,1.0,0.8012773892638271
